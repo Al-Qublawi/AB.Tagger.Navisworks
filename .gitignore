@@ -1,0 +1,11 @@
+bin/
+obj/
+dist/
+Setup/payload/
+refs/
+
+# IDE / tooling
+.vs/
+.vscode/
+*.user
+*.suo

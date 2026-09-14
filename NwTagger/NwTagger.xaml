@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- BEGIN STANDARD SECTION DO NOT EDIT -->
+<RibbonControl
+    x:Uid="ABTaggerRibbon" xmlns="clr-namespace:Autodesk.Windows;assembly=AdWindows"
+    xmlns:wpf="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:adwi="clr-namespace:Autodesk.Internal.Windows;assembly=AdWindows"
+    xmlns:system="clr-namespace:System;assembly=mscorlib"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="clr-namespace:Autodesk.Navisworks.Gui.Roamer.AIRLook;assembly=navisworks.gui.roamer">
+<!-- END STANDARD SECTION DO NOT EDIT -->
+
+  <!--
+    Button images are deliberately not set here. Navisworks resolves the Icon
+    and LargeIcon named on each [Command] attribute relative to the plugin DLL
+    (or an Images folder beside it), which avoids the path ambiguity that
+    Image="..\Images\..." introduces once localised XAML subfolders exist.
+
+    The tab is the shared AB Adv Tools tab: every AB plugin declares it with this Id and
+    title, and the kit folds them into one tab at startup (shared\ABAdvTools).
+  -->
+  <RibbonTab Id="ID_ABAdvTools" Title="AB Adv Tools" KeyTip="AB">
+
+    <!-- Brand entry point: the logo button opens the tagger panel. -->
+    <RibbonPanel x:Uid="ABT_Panel_Settings">
+      <RibbonPanelSource x:Uid="ABT_Source_Settings" KeyTip="ST" Title="AB Tagger">
+
+        <local:NWRibbonButton x:Uid="ABT_ShowPanel" Id="ID_ABT_Panel"
+                              Size="Large"
+                              KeyTip="PN"
+                              ShowText="True"
+                              Orientation="Vertical" />
+
+      </RibbonPanelSource>
+    </RibbonPanel>
+
+    <!-- Turning the tagging tool on and off. -->
+    <RibbonPanel x:Uid="ABT_Panel_Tagging">
+      <RibbonPanelSource x:Uid="ABT_Source_Tagging" KeyTip="TG" Title="Tagging">
+
+        <local:NWRibbonButton x:Uid="ABT_Enable" Id="ID_ABT_Enable"
+                              Size="Large"
+                              KeyTip="EN"
+                              ShowText="True"
+                              Orientation="Vertical" />
+
+        <local:NWRibbonButton x:Uid="ABT_Disable" Id="ID_ABT_Disable"
+                              Size="Large"
+                              KeyTip="DI"
+                              ShowText="True"
+                              Orientation="Vertical" />
+
+      </RibbonPanelSource>
+    </RibbonPanel>
+
+    <!-- Everything to do with the tag list. -->
+    <RibbonPanel x:Uid="ABT_Panel_Tags">
+      <RibbonPanelSource x:Uid="ABT_Source_Tags" KeyTip="TS" Title="Tags">
+
+        <RibbonRowPanel x:Uid="ABT_Row_Tags">
+
+          <local:NWRibbonButton x:Uid="ABT_Export" Id="ID_ABT_Export"
+                                KeyTip="EX"
+                                ShowText="True"
+                                Orientation="Horizontal" />
+
+          <RibbonRowBreak x:Uid="ABT_Break_1" />
+
+          <local:NWRibbonButton x:Uid="ABT_Clear" Id="ID_ABT_Clear"
+                                KeyTip="CL"
+                                ShowText="True"
+                                Orientation="Horizontal" />
+
+        </RibbonRowPanel>
+
+      </RibbonPanelSource>
+    </RibbonPanel>
+
+    <!-- BEGIN AB ADV TOOLS SHARED PANEL - kept identical in every AB plugin by sync-kit.ps1; do not edit here -->
+    <!--
+      Every AB plugin carries this panel. At runtime NavisworksRibbonMerger keeps exactly one,
+      last on the AB Adv Tools tab; its buttons are handled by NavisworksAdvTools, so whichever
+      plugin's copy survives behaves the same. The Id on RibbonPanelSource is how it is found.
+    -->
+    <RibbonPanel x:Uid="ABADV_Panel_Shared">
+      <RibbonPanelSource x:Uid="ABADV_Source_Shared" Id="ABADV_SharedPanel" KeyTip="AV" Title="AB Adv Tools">
+
+        <local:NWRibbonButton x:Uid="ABADV_About" Id="ID_ABADV_About"
+                              Size="Large"
+                              KeyTip="AA"
+                              ShowText="True"
+                              Orientation="Vertical" />
+
+        <RibbonRowPanel x:Uid="ABADV_Row_Shared">
+
+          <local:NWRibbonButton x:Uid="ABADV_Updates" Id="ID_ABADV_Updates"
+                                KeyTip="AU"
+                                ShowText="True"
+                                Orientation="Horizontal" />
+
+          <RibbonRowBreak x:Uid="ABADV_Break_Shared" />
+
+          <local:NWRibbonButton x:Uid="ABADV_LinkedIn" Id="ID_ABADV_LinkedIn"
+                                KeyTip="AL"
+                                ShowText="True"
+                                Orientation="Horizontal" />
+
+        </RibbonRowPanel>
+
+      </RibbonPanelSource>
+    </RibbonPanel>
+    <!-- END AB ADV TOOLS SHARED PANEL -->
+
+  </RibbonTab>
+
+<!-- BEGIN STANDARD SECTION DO NOT EDIT -->
+</RibbonControl>
+<!-- END STANDARD SECTION DO NOT EDIT -->

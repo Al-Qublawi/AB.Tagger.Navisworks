@@ -1,0 +1,118 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>NwTagger</AssemblyName>
+    <RootNamespace>NwTagger</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AssemblyTitle>Navisworks Element Tagger</AssemblyTitle>
+    <Product>NwTagger</Product>
+    <Company>Abdullah Lotfy</Company>
+    <Version>1.1.0</Version>
+    <Description>Tags Navisworks elements with native redline markup and auto-saved viewpoints.</Description>
+    <DebugType>portable</DebugType>
+
+    <!--
+      Change this one line to build against a different Navisworks release, or
+      override it on the command line.
+
+      No trailing separator: a value ending in "\" would escape the closing
+      quote when passed as -p:NavisworksDir="...\", merging it with the next
+      argument. NwApiPath below adds the separator locally instead, which a
+      command-line override cannot interfere with.
+    -->
+    <NavisworksDir>C:\Program Files\Autodesk\Navisworks Manage 2026</NavisworksDir>
+    <NwApiPath>$(NavisworksDir)\</NwApiPath>
+
+    <!-- Set -p:OutputSuffix=2026 to build several releases side by side. -->
+    <OutputPath Condition="'$(OutputSuffix)' != ''">bin\$(Configuration)-$(OutputSuffix)\</OutputPath>
+
+    <!--
+      How markup gets stored, which differs by release:
+
+        Objects (default)  2025 and 2026 - SavedViewpoint.EditRedlines()
+        Json               2027 - View.SetRedlines() + ReplaceFromCurrentView
+
+      2027 made LcOpRedlineList internal and dropped EditRedlines, so the object
+      route does not even compile there. Pass -p:RedlineBackend=Json for 2027.
+    -->
+    <RedlineBackend Condition="'$(RedlineBackend)' == ''">Objects</RedlineBackend>
+  </PropertyGroup>
+
+  <!-- Exactly one backend compiles; both expose the same Prepare/Commit pair. -->
+  <ItemGroup>
+    <Compile Remove="Core\MarkupBackend.Json.cs" Condition="'$(RedlineBackend)' != 'Json'" />
+    <Compile Remove="Core\MarkupBackend.Objects.cs" Condition="'$(RedlineBackend)' == 'Json'" />
+  </ItemGroup>
+
+  <!-- Navisworks API. Private=false so we never copy Autodesk DLLs next to our plugin. -->
+  <ItemGroup>
+    <Reference Include="Autodesk.Navisworks.Api">
+      <HintPath>$(NwApiPath)Autodesk.Navisworks.Api.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Autodesk.Navisworks.ComApi">
+      <HintPath>$(NwApiPath)Autodesk.Navisworks.ComApi.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Autodesk.Navisworks.Interop.ComApi">
+      <HintPath>$(NwApiPath)Autodesk.Navisworks.Interop.ComApi.dll</HintPath>
+      <Private>false</Private>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Navisworks reads the ribbon layout and the button images as loose files
+    beside the plugin DLL, not as embedded resources, so both must land in the
+    output folder and be carried into the bundle by the installer.
+  -->
+  <ItemGroup>
+    <None Update="Images\*.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- The panel draws the logo, so it rides inside the assembly. -->
+    <EmbeddedResource Include="Images\logo.png">
+      <LogicalName>NwTagger.Images.logo.png</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!--
+    Navisworks looks for a plugin's ribbon layout in a LOCALE subfolder beside
+    the assembly - en-US\NwTagger.xaml - not in the assembly folder itself.
+    This matches the post-build step in Autodesk's own CustomRibbon sample.
+    Putting the file next to the DLL means the tab silently never appears.
+  -->
+  <Target Name="CopyRibbonLayout" AfterTargets="Build">
+    <Copy SourceFiles="NwTagger.xaml"
+          DestinationFolder="$(OutputPath)en-US"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
+    AB Adv Tools suite: the shared ribbon tab, About / Check for Updates / LinkedIn panel and
+    GitHub release notifications. The kit is compiled into this DLL; see shared\ABAdvTools.
+  -->
+  <PropertyGroup>
+    <ABAdvToolsRibbonXaml>$(MSBuildProjectDirectory)\NwTagger.xaml</ABAdvToolsRibbonXaml>
+  </PropertyGroup>
+  <Import Project="..\shared\ABAdvTools\build\ABAdvTools.Navisworks.targets" />
+
+  <!-- net48 SDK-style projects do not add framework references automatically. -->
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+</Project>
