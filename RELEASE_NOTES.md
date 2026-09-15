@@ -1,7 +1,30 @@
-# AB Tagger 1.1.0
+# AB Tagger 1.1.1
 
 Element tags from Quick Properties, as native Navisworks redline markup, with a saved viewpoint per
 tag and an Excel export. Navisworks Manage and Simulate 2024 – 2027.
+
+## The installer is an .msi: `AB.Tagger-1.1.1.msi`
+
+1.1.0's `AB.Tagger.Setup.exe` was blocked on company PCs by Microsoft Defender's attack surface
+reduction rule *"Block executable files from running unless they meet a prevalence, age, or trusted
+list criteria"*. That rule stops unknown programs, not Windows Installer packages, and the new
+package runs no program of its own. The tagger itself is unchanged.
+
+Everything 1.1.0's installer offered is still there:
+
+- **Only me** (the default, no administrator rights) or **Everyone**
+- the Navisworks releases installed here, ticked — now one tick per release, remembered for the
+  next upgrade
+- **earlier versions**: a copy installed by 1.1.0's `Setup.exe` is removed first unless you untick it
+- Apps and Features for uninstall and repair
+- silent deployment: `msiexec /i AB.Tagger-1.1.1.msi /qn`, and `msiexec /x … /qn` removes without a
+  window, as `/uninstall` did
+
+If Setup.exe 1.1.0 is installed, just run the .msi: it replaces it. Close Navisworks first.
+
+---
+
+# AB Tagger 1.1.0
 
 ## What's new
 

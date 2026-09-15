@@ -41,33 +41,37 @@ to the normal Select tool.
 
 ## Install — on any machine
 
-Run **`dist\AB.Tagger.Setup.exe`** (it replaces `NwTaggerSetup.exe`). It is a
-single self-contained file, about 1 MB, with the plugin for every supported
-release embedded inside it. Nothing else needs to travel with it, and it needs
-no admin rights for a per-user install.
+Run **`AB.Tagger-<version>.msi`** from the latest release (it replaces
+`AB.Tagger.Setup.exe` and `NwTaggerSetup.exe`). It is a single Windows Installer
+package, about 1.4 MB, with the plugin for every supported release inside it. It
+runs no code of its own, so it installs on company PCs where Microsoft Defender's
+attack surface reduction rules block unknown programs, and it needs no admin
+rights for an Only me install.
 
-It detects the Navisworks releases on the machine and **finds any earlier copy
-of the tagger** — a 1.0 install from `NwTaggerSetup.exe` or `install.ps1`, in
-either scope, or an earlier install from this setup — and offers to remove it
-first. It then installs the bundle to
-`%APPDATA%\Autodesk\ApplicationPlugins\NwTagger.bundle` and registers *AB Tagger
-for Navisworks* in Apps and Features. Choosing "Everyone who uses this computer"
-writes to `%PROGRAMDATA%` instead and restarts setup elevated with the same
-choices.
+Its pages:
 
-**Navisworks must be closed** — it holds the plugin file open while running.
-The installer checks and tells you.
+- **Install for** — Only me (default: `%APPDATA%\Autodesk\ApplicationPlugins\NwTagger.bundle`)
+  or Everyone (`%PROGRAMDATA%`, needs administrator rights).
+- **Choose releases** — a tick per Navisworks release built, ticked where that
+  Navisworks is installed; remembered for the next upgrade.
+- **Earlier versions** — a copy installed by the retired `AB.Tagger.Setup.exe` is
+  removed first unless you untick it. A copy installed for everyone can only be
+  removed by an install for everyone, so the scope page suggests Everyone then.
+
+It registers *AB Tagger for Navisworks* in Apps and Features.
+
+**Close Navisworks first** — it holds the plugin file open while running. If it
+is still open, Windows lists it and asks you to close it.
 
 Silent options, for rolling out across a team:
 
 ```bash
-AB.Tagger.Setup.exe /silent
+msiexec /i AB.Tagger-1.1.1.msi /qn                 :: only me
+msiexec /i AB.Tagger-1.1.1.msi /qn ALLUSERS=1      :: everyone (elevated prompt)
+msiexec /i AB.Tagger-1.1.1.msi /qn ALLRELEASES=1   :: also releases not installed here
+msiexec /i AB.Tagger-1.1.1.msi /qn NW2025=0        :: leave a release out
+msiexec /x AB.Tagger-1.1.1.msi /qn                 :: uninstall, without a window
 ```
-
-`/silent /allusers` installs for everyone (from an elevated prompt);
-`/uninstall` removes it without a window, as 1.0 did (current user; add `/allusers` for
-everyone); `/scan` reports what is installed without
-changing anything.
 
 ### Release notifications
 
@@ -82,10 +86,13 @@ release. Switch it off in **AB Adv Tools › About**, which covers every AB add-
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
 
-Compiles the plugin for each release, embeds the builds into the executable on
-the AB Adv Tools installer engine (`shared\ABAdvTools`), stamps it with the
-plugin's version, and verifies the payload actually made it in before declaring
-success. Output lands in `dist\`.
+Compiles the plugin for each release and builds `dist\AB.Tagger-<version>.msi`
+with the AB Adv Tools kit (`shared\ABAdvTools\msi`) from
+`installer\Tagger.msi.psd1`, stamped with the plugin's version. The kit validates
+the package and refuses to finish if it contains any step that runs code. Needs the
+WiX CLI 5 (`dotnet tool install --global wix --version 5.0.2`, then
+`wix extension add -g WixToolset.UI.wixext/5.0.2`). Add `-DryRun` to see what the
+package would do on this machine without changing anything.
 
 ### Developing on it
 
@@ -146,7 +153,7 @@ which Navisworks resolves against the `Images` folder beside the DLL. That is
 more predictable than the XAML-relative `Image=` paths, so the layout file does
 not set them.
 
-All of this is why the installer payload is a zip of the whole build output
+All of this is why the installer carries the whole build output for each release
 rather than a single assembly.
 
 ---
@@ -393,13 +400,12 @@ NwTagger/                  the add-in itself
   Images/                  logo.png plus generated .ico button icons
   NwTagger.xaml            Ribbon layout (deployed to en-US\)
 
-Setup/                     the distributable installer, AB.Tagger.Setup.exe
-  Program.cs               Entry point
-  TaggerSetup.cs           What is installed where, and how earlier copies are found;
-                           everything else is the AB Adv Tools installer engine
+installer/
+  Tagger.msi.psd1          What the .msi installs where; everything else is the kit's
+  product.ico              Apps and Features icon
 
 shared/ABAdvTools/         the AB Adv Tools kit - shared tab, About, release checks,
-                           installer engine (vendored; edit the canonical kit and sync)
+                           .msi builder (vendored; edit the canonical kit and sync)
 
 Probe2027/                 2027 redline-format probe (diagnostic, not shipped)
   RedlineDumpPlugin.cs     Dumps GetRedlines() per viewpoint + round-trip test
@@ -454,9 +460,8 @@ powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
 
 That is the whole process. The build script compiles one plugin per release it
-can find an API for, zips each into `Setup\payload`, and the installer discovers
-its own payloads from its embedded resources at runtime — so no code changes
-anywhere. A release installed locally is found automatically; `refs\<year>\`
+can find an API for, and the .msi gets a tick for each release it is given — so
+no code changes anywhere. A release installed locally is found automatically; `refs\<year>\`
 exists for releases that are not.
 
 Series codes are the release year minus 2003, so 2024 is `Nw21` and 2027 is

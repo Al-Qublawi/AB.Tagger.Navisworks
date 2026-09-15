@@ -1,7 +1,6 @@
 bin/
 obj/
 dist/
-Setup/payload/
 refs/
 
 # IDE / tooling

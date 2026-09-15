@@ -1,15 +1,16 @@
 <#
-    Builds the distributable installer, AB.Tagger.Setup.exe.
+    Builds the distributable installer, dist\AB.Tagger-<version>.msi.
 
     One plugin build is produced per Navisworks release whose API assemblies are
-    available, each zipped into Setup\payload as Navisworks<year>.zip and embedded
-    in the executable. The result is a single self-contained file, built on the
-    AB Adv Tools installer engine (shared\ABAdvTools): it detects earlier copies -
-    including those NwTaggerSetup.exe 1.0 wrote - offers to remove them, installs,
-    and registers in Apps and Features.
+    available, each staged as one release of a Windows Installer package made by the
+    AB Adv Tools kit (shared\ABAdvTools\msi) from installer\Tagger.msi.psd1. The
+    package runs no code of its own, so company PCs with Defender's attack surface
+    reduction rules install it like any .msi. It installs for Only me (default, no
+    administrator rights) or Everyone, and offers to remove a copy the retired
+    AB.Tagger.Setup.exe (1.1.0) installed.
 
-    The installer is version-stamped from NwTagger\NwTagger.csproj, so the plugin
-    and its installer can never disagree.
+    The package is version-stamped from NwTagger\NwTagger.csproj, so the plugin and
+    its installer can never disagree.
 
     Where the API assemblies come from:
       1. A refs\<year> folder in this repo, for releases not installed here.
@@ -23,23 +24,29 @@
     Publish the result as a GitHub release asset (tag v<version>) on
     Al-Qublawi/AB.Tagger.Navisworks: installed copies are told about new releases there.
 
+    Requires the WiX CLI 5:  dotnet tool install --global wix --version 5.0.2
+                             wix extension add -g WixToolset.UI.wixext/5.0.2
+
     Usage:
         powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
+        powershell -ExecutionPolicy Bypass -File .\build-installer.ps1 -DryRun   # what it would do here
 #>
 
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    # After building, show what the package would do on this computer, changing nothing.
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 
-$root       = Split-Path -Parent $MyInvocation.MyCommand.Path
-$plugin     = Join-Path $root 'NwTagger\NwTagger.csproj'
-$setup      = Join-Path $root 'Setup\AB.Tagger.Setup.csproj'
-$payloadDir = Join-Path $root 'Setup\payload'
-$refsDir    = Join-Path $root 'refs'
+$root    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$plugin  = Join-Path $root 'NwTagger\NwTagger.csproj'
+$stage   = Join-Path $root 'obj\msi\payload'
+$refsDir = Join-Path $root 'refs'
+$kitMsi  = Join-Path $root 'shared\ABAdvTools\msi'
 
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $root 'dist' }
 
@@ -75,11 +82,10 @@ function Find-ApiDirectory([int]$Year) {
     return $null
 }
 
-# ---------------------------------------------------------------- payloads
+# ---------------------------------------------------------------- builds
 
-if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+if (Test-Path $stage) { [System.IO.Directory]::Delete($stage, $true) }
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 $built   = @()
 $skipped = @()
@@ -101,8 +107,8 @@ foreach ($year in $knownYears) {
     Write-Host "Building for Navisworks $year ($backend backend)" -ForegroundColor Cyan
     Write-Host "   API: $api"
 
-    $stage = Join-Path $root "NwTagger\bin\$Configuration-$year"
-    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    $output = Join-Path $root "NwTagger\bin\$Configuration-$year"
+    if (Test-Path $output) { [System.IO.Directory]::Delete($output, $true) }
 
     # No trailing separators in these values: a trailing backslash would
     # escape the closing quote and merge the arguments together.
@@ -113,28 +119,20 @@ foreach ($year in $knownYears) {
     if ($LASTEXITCODE -ne 0) { throw "Plugin build for $year failed ($LASTEXITCODE)." }
 
     # The plugin ships loose files beside the DLL - ribbon XAML and Images -
-    # so the payload is the whole output folder, not just the assembly. Debug
+    # so a release is the whole output folder, not just the assembly. Debug
     # symbols help nobody on a user's machine.
-    $pack = Join-Path $env:TEMP "abtagger_payload_$year"
-    if (Test-Path $pack) { Remove-Item $pack -Recurse -Force }
-    Copy-Item $stage $pack -Recurse
-    Get-ChildItem $pack -Recurse -Filter *.pdb | Remove-Item -Force
+    $to = Join-Path $stage "Navisworks$year"
+    Copy-Item $output $to -Recurse
+    Get-ChildItem $to -Recurse -Filter *.pdb | ForEach-Object { [System.IO.File]::Delete($_.FullName) }
 
-    $zip = Join-Path $payloadDir "Navisworks$year.zip"
-    [System.IO.Compression.ZipFile]::CreateFromDirectory($pack, $zip)
-    Remove-Item $pack -Recurse -Force
-
-    $built += [pscustomobject]@{ Year = $year; Zip = $zip }
+    $built += $year
 }
 
 if ($built.Count -eq 0) { throw 'No plugin builds were produced - nothing to install.' }
 
 Write-Host ''
-Write-Host 'Payloads:' -ForegroundColor Green
-$built | ForEach-Object { Write-Host ("   Navisworks{0}.zip  {1:N0} bytes" -f $_.Year, (Get-Item $_.Zip).Length) }
-
+Write-Host ("Built: Navisworks {0}" -f ($built -join ', ')) -ForegroundColor Green
 if ($skipped.Count -gt 0) {
-    Write-Host ''
     Write-Host 'Not included:' -ForegroundColor Yellow
     $skipped | ForEach-Object { Write-Host "   $_" -ForegroundColor Yellow }
 }
@@ -142,39 +140,28 @@ if ($skipped.Count -gt 0) {
 # ---------------------------------------------------------------- installer
 
 Write-Host ''
-Write-Host 'Building the installer...' -ForegroundColor Cyan
-# --no-incremental: the payload is embedded at compile time, and an incremental
-# build would happily ship yesterday's plugin inside today's installer.
-& dotnet build $setup -c $Configuration -v minimal --no-incremental "-p:Version=$version"
-if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)." }
-
-$exe = Join-Path $root "Setup\bin\$Configuration\AB.Tagger.Setup.exe"
-if (-not (Test-Path $exe)) { throw "Installer not found at $exe" }
-
+Write-Host 'Building the .msi...' -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$final = Join-Path $OutputDirectory 'AB.Tagger.Setup.exe'
-Copy-Item $exe $final -Force
+$package = & (Join-Path $kitMsi 'New-AdvToolsMsi.ps1') `
+    -Definition (Join-Path $root 'installer\Tagger.msi.psd1') `
+    -Payload $stage -Version $version -OutputDirectory $OutputDirectory `
+    -WorkDirectory (Join-Path $root 'obj\msi\work')
 
-# The 1.0 installer's name, so nobody runs a stale copy by mistake.
-$stale = Join-Path $OutputDirectory 'NwTaggerSetup.exe'
-if (Test-Path $stale) { Remove-Item $stale -Force }
-
-# Confirm the payloads really did travel inside the executable, rather than
-# shipping an installer with nothing to install.
-$asm = [System.Reflection.Assembly]::Load([System.IO.File]::ReadAllBytes($final))
-$payloads = @($asm.GetManifestResourceNames() | Where-Object { $_ -like 'ABAdvTools.Payload.*' })
+# Earlier installers left in dist\ would only confuse whoever picks a file to publish.
+Get-ChildItem $OutputDirectory -File |
+    Where-Object { $_.FullName -ne $package.Path -and ($_.Name -like 'AB.Tagger*' -or $_.Name -like 'NwTaggerSetup*') } |
+    ForEach-Object { [System.IO.File]::Delete($_.FullName) }
 
 Write-Host ''
-if ($payloads.Count -ne $built.Count) {
-    Write-Warning "Expected $($built.Count) payload(s) but the installer contains $($payloads.Count). Do not distribute this build."
-    exit 1
-}
-
 Write-Host 'Installer ready:' -ForegroundColor Green
-Write-Host ("  {0}   ({1:N0} bytes)" -f $final, (Get-Item $final).Length)
-$payloads | ForEach-Object { Write-Host "     $_" }
-Write-Host ("  SHA256: {0}" -f (Get-FileHash $final -Algorithm SHA256).Hash)
-
+Write-Host ("  {0}   ({1:N0} bytes)" -f $package.Path, (Get-Item $package.Path).Length)
+Write-Host ("  SHA256: {0}" -f $package.Sha256)
 Write-Host ''
-Write-Host 'Copy that single file to any machine and run it.' -ForegroundColor Green
-Write-Host 'Silent options:  AB.Tagger.Setup.exe /silent   |   /silent /allusers   |   /uninstall /silent'
+Write-Host 'Double-click it, or deploy silently:' -ForegroundColor Green
+Write-Host "  msiexec /i AB.Tagger-$version.msi /qn              (only me)"
+Write-Host "  msiexec /i AB.Tagger-$version.msi /qn ALLUSERS=1   (everyone; elevated prompt)"
+Write-Host "  msiexec /x AB.Tagger-$version.msi /qn"
+
+if ($DryRun) {
+    & (Join-Path $kitMsi 'Test-AdvToolsMsi.ps1') -Msi $package.Path -WorkDirectory (Join-Path $root 'obj\msi\dryrun') | Out-Null
+}
