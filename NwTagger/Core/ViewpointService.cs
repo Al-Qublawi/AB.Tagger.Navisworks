@@ -16,6 +16,15 @@ namespace NwTagger.Core
         private const double RotationTolerance = 1e-9;
         private const double FieldTolerance = 1e-9;
 
+        /// <summary>
+        /// How far the field of view may differ and still count as "the same
+        /// view" when matching a saved viewpoint. Restoring a viewpoint into a
+        /// window of a different shape adjusts it slightly, so an exact match
+        /// would never happen and tags would never land in the viewpoint the
+        /// user is actually looking at.
+        /// </summary>
+        private const double FieldRatioTolerance = 0.02;
+
         private readonly double _x, _y, _z;
         private readonly double _a, _b, _c, _d;
         private readonly double _heightField;
@@ -51,9 +60,40 @@ namespace NwTagger.Core
             }
         }
 
+        /// <summary>The camera of a viewpoint that is already in the document.</summary>
+        internal static CameraKey From(Viewpoint viewpoint)
+        {
+            try
+            {
+                return viewpoint == null ? null : new CameraKey(viewpoint);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         internal bool Matches(CameraKey other)
         {
+            return Matches(other, false);
+        }
+
+        /// <summary>
+        /// Same camera, allowing the small field-of-view difference that
+        /// restoring a saved viewpoint into this window introduces.
+        /// </summary>
+        internal bool MatchesRestoredViewpoint(CameraKey other)
+        {
+            return Matches(other, true);
+        }
+
+        private bool Matches(CameraKey other, bool allowFieldDrift)
+        {
             if (other == null) return false;
+
+            bool sameField = allowFieldDrift
+                ? NearRatio(_heightField, other._heightField, FieldRatioTolerance)
+                : Near(_heightField, other._heightField, FieldTolerance);
 
             return Near(_x, other._x, PositionTolerance)
                 && Near(_y, other._y, PositionTolerance)
@@ -62,13 +102,21 @@ namespace NwTagger.Core
                 && Near(_b, other._b, RotationTolerance)
                 && Near(_c, other._c, RotationTolerance)
                 && Near(_d, other._d, RotationTolerance)
-                && Near(_heightField, other._heightField, FieldTolerance)
+                && sameField
                 && _projection == other._projection;
         }
 
         private static bool Near(double a, double b, double tolerance)
         {
             return Math.Abs(a - b) <= tolerance;
+        }
+
+        private static bool NearRatio(double a, double b, double tolerance)
+        {
+            double scale = Math.Max(Math.Abs(a), Math.Abs(b));
+            if (scale <= 1e-9) return true;
+
+            return Math.Abs(a - b) / scale <= tolerance;
         }
     }
 
@@ -79,13 +127,21 @@ namespace NwTagger.Core
         public string TagName { get; set; }
 
         /// <summary>
-        /// Name of the viewpoint holding it. Equals <see cref="TagName"/> for a
-        /// single-tag viewpoint, or a range like "Tag 01-03" when several tags
-        /// were placed without moving the camera.
+        /// Name of the viewpoint holding it: the user's own viewpoint when the
+        /// tag went into one of theirs, otherwise this add-in's own name for it -
+        /// "Tag 03", or a range like "Tag 01-03" when several tags were placed
+        /// without moving the camera.
         /// </summary>
         public string ViewpointName { get; set; }
 
         public bool Reused { get; set; }
+
+        /// <summary>
+        /// False when the tag went into a viewpoint that was already in the
+        /// document - one the user made, or one from an earlier session. Those
+        /// are never renamed and never have their own markup disturbed.
+        /// </summary>
+        public bool OwnViewpoint { get; set; }
 
         /// <summary>Identifies the viewpoint so the exporter can photograph it.</summary>
         public Guid ViewpointGuid { get; set; }
@@ -102,10 +158,21 @@ namespace NwTagger.Core
     /// <summary>
     /// Owns the saved viewpoint the tags are being written into.
     ///
+    /// There are two kinds of target, and the difference matters:
+    ///
+    ///   * **A viewpoint the user is already on.** If a saved viewpoint is
+    ///     current and the camera is still its own, the tag goes into *that*
+    ///     viewpoint: its name is left alone, and the markup it already had -
+    ///     including redlines drawn by hand - is kept. This is what people
+    ///     expect when they open a viewpoint and start tagging.
+    ///   * **A viewpoint of our own.** Otherwise a "Tag 03" viewpoint is created
+    ///     for the camera, and further tags from that same camera widen it to
+    ///     "Tag 03-05".
+    ///
     /// What it keeps between tags is the *camera* and the list of markup, never a
-    /// viewpoint object. Every write builds a brand new SavedViewpoint from that
-    /// camera and pushes it down; nothing the document has already copied is
-    /// written to a second time.
+    /// viewpoint object the document has seen. Every write builds a brand new
+    /// SavedViewpoint - from the camera for our own viewpoints, or from a fresh
+    /// copy of how the user's viewpoint looked when it was adopted.
     ///
     /// That is deliberate, and it is the fix for tags disappearing. A viewpoint
     /// object that has been copied into the document once hands back a redline
@@ -128,6 +195,12 @@ namespace NwTagger.Core
         private static readonly Regex TagNamePattern =
             new Regex(@"^Tag\s+(\d+)(?:\s*-\s*(\d+))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+        /// <summary>True when a name looks like one this add-in generated.</summary>
+        internal static bool IsGeneratedName(string name)
+        {
+            return !string.IsNullOrEmpty(name) && TagNamePattern.IsMatch(name.Trim());
+        }
+
         /// <summary>The camera the active viewpoint was captured from.</summary>
         private Viewpoint _camera;
 
@@ -140,8 +213,29 @@ namespace NwTagger.Core
         private string _previousViewpointName;
 
         /// <summary>
-        /// Every markup item in the active viewpoint. Held here rather than read
-        /// back from the document, so each write can rebuild the whole set.
+        /// False while tags are going into a viewpoint that was already in the
+        /// document. Those are never renamed, and what they already held is kept.
+        /// </summary>
+        private bool _ownViewpoint = true;
+
+        /// <summary>
+        /// A detached copy of an adopted viewpoint exactly as it was found, kept
+        /// so every write can start from it again. Copying it per write is what
+        /// makes a repeated write harmless: the user's markup appears once, ours
+        /// appears once, however many times the write is attempted.
+        /// </summary>
+        private SavedViewpoint _baseline;
+
+        /// <summary>The same thing for releases that keep markup on the view, as JSON.</summary>
+        private string _baselineJson;
+
+        /// <summary>How much markup the adopted viewpoint already had.</summary>
+        private int _baselineMarkup;
+
+        /// <summary>
+        /// Every markup item this add-in has added to the active viewpoint. Held
+        /// here rather than read back from the document, so each write can
+        /// rebuild the whole set.
         /// </summary>
         private readonly List<MarkupItem> _items = new List<MarkupItem>();
 
@@ -163,6 +257,10 @@ namespace NwTagger.Core
             _inDocument = false;
             _viewpointName = null;
             _previousViewpointName = null;
+            _ownViewpoint = true;
+            _baseline = null;
+            _baselineJson = null;
+            _baselineMarkup = 0;
             _firstTagInViewpoint = 0;
             _lastTagInViewpoint = 0;
             _items.Clear();
@@ -191,8 +289,8 @@ namespace NwTagger.Core
         }
 
         /// <summary>
-        /// Adds redlines to the saved viewpoint for the current camera, creating
-        /// one if the user has moved (or if this is the first tag).
+        /// Adds redlines to the saved viewpoint for the current camera: the one
+        /// the user is on if they are on one, otherwise a new one of our own.
         /// </summary>
         public ViewpointResult AddTag(
             Document doc,
@@ -208,15 +306,23 @@ namespace NwTagger.Core
             string tagName = FormatTagName(tagNumber);
 
             CameraKey now = CameraKey.FromCurrent(doc);
-            bool sameCamera = _inDocument && _camera != null && _cameraKey != null && _cameraKey.Matches(now);
+            bool sameTarget = _inDocument && _camera != null && _cameraKey != null
+                              && _cameraKey.Matches(now) && ResolveStored(doc) != null;
 
             // This tag's own markup is kept aside: if the shared viewpoint turns
             // out not to take it, the tag still gets a viewpoint of its own.
             List<MarkupItem> mine = new List<MarkupItem>();
             if (markup != null) mine.AddRange(markup);
 
-            if (!sameCamera) StartNewViewpoint(doc, now, tagNumber);
-            else WidenName(tagNumber);
+            if (!sameTarget)
+            {
+                if (!TryAdoptCurrentViewpoint(doc, view, now))
+                    StartNewViewpoint(doc, now, tagNumber);
+            }
+            else if (_ownViewpoint)
+            {
+                WidenName(tagNumber);
+            }
 
             _items.AddRange(mine);
 
@@ -238,10 +344,10 @@ namespace NwTagger.Core
                     Reset();
                     StartNewViewpoint(doc, now, tagNumber);
                     _items.AddRange(mine);
-                    sameCamera = false;
+                    sameTarget = false;
 
                     warning = TryWrite(doc, view, selection)
-                        ? "The earlier viewpoint would not take more markup, so " + tagName
+                        ? "The viewpoint would not take more markup, so " + tagName
                             + " was saved in a viewpoint of its own."
                         : "Navisworks would not store the markup for " + tagName + ".";
                 }
@@ -251,7 +357,8 @@ namespace NwTagger.Core
             {
                 TagName = tagName,
                 ViewpointName = _viewpointName,
-                Reused = sameCamera,
+                Reused = sameTarget || !_ownViewpoint,
+                OwnViewpoint = _ownViewpoint,
                 ViewpointGuid = _guid,
                 Warning = warning
             };
@@ -271,6 +378,71 @@ namespace NwTagger.Core
             _viewpointName = _firstTagInViewpoint == _lastTagInViewpoint
                 ? FormatTagName(_firstTagInViewpoint)
                 : FormatTagName(_firstTagInViewpoint) + "-" + tagNumber.ToString("00", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// Takes over the viewpoint the user is already on, so the tag goes into
+        /// it instead of a new one beside it.
+        ///
+        /// Two conditions, both necessary. There has to *be* a current saved
+        /// viewpoint - Navisworks reports which one is selected - and the camera
+        /// has to still be that viewpoint's own. Markup is stored in camera
+        /// space, so writing it into a viewpoint the user has navigated away from
+        /// would put the tag somewhere else entirely the next time that viewpoint
+        /// is restored.
+        /// </summary>
+        private bool TryAdoptCurrentViewpoint(Document doc, View view, CameraKey now)
+        {
+            if (!TaggerSettings.Current.AddToCurrentViewpoint) return false;
+            if (now == null) return false;
+
+            SavedItem current;
+
+            try { current = doc.SavedViewpoints.CurrentSavedViewpoint; }
+            catch { return false; }
+
+            SavedViewpoint viewpoint = current as SavedViewpoint;
+            if (viewpoint == null || current.IsGroup) return false;
+
+            CameraKey theirs;
+
+            try { theirs = CameraKey.From(viewpoint.Viewpoint); }
+            catch { return false; }
+
+            if (theirs == null || !theirs.MatchesRestoredViewpoint(now)) return false;
+
+            SavedViewpoint baseline = null;
+
+            try { baseline = current.CreateCopy() as SavedViewpoint; }
+            catch { baseline = null; }
+
+            // Without a copy of how we found it, this release cannot put the
+            // user's own markup back on each write - so leave their viewpoint
+            // alone and make one of ours instead.
+            if (baseline == null && MarkupBackend.MarkupTravelsInViewpoint) return false;
+
+            Viewpoint camera;
+
+            try { camera = doc.CurrentViewpoint.CreateCopy(); }
+            catch { return false; }
+
+            _camera = camera;
+            _cameraKey = now;
+            _guid = current.Guid;
+            _inDocument = true;
+            _ownViewpoint = false;
+            _baseline = baseline;
+            _baselineJson = MarkupBackend.CaptureBaseline(doc, view, current);
+            _viewpointName = current.DisplayName;
+            _previousViewpointName = null;
+            _firstTagInViewpoint = 0;
+            _lastTagInViewpoint = 0;
+            _items.Clear();
+
+            int already = MarkupBackend.Count(doc, view, current);
+            _baselineMarkup = already > 0 ? already : 0;
+
+            return true;
         }
 
         /// <summary>
@@ -331,6 +503,10 @@ namespace NwTagger.Core
             _cameraKey = camera;
             _guid = Guid.NewGuid();
             _inDocument = false;
+            _ownViewpoint = true;
+            _baseline = null;
+            _baselineJson = null;
+            _baselineMarkup = 0;
 
             // A new viewpoint starts with no markup of its own.
             _items.Clear();
@@ -386,7 +562,7 @@ namespace NwTagger.Core
 
                 // Releases that keep the markup on the view write it now, with the
                 // viewpoint already in the document and made current.
-                MarkupBackend.Store(doc, view, stored, _items);
+                MarkupBackend.Store(doc, view, stored, _items, _baselineJson);
 
                 // Re-find it: capturing from the current view can hand back a
                 // different object, and the name has to be right afterwards.
@@ -394,7 +570,8 @@ namespace NwTagger.Core
                 stored = ResolveStored(doc);
                 if (stored == null) return false;
 
-                Rename(doc, stored);
+                // Only ever rename a viewpoint this add-in created.
+                if (_ownViewpoint) Rename(doc, stored);
 
                 // Redlines are only drawn while their viewpoint is the current
                 // one. Without this the markup vanishes the instant it is written
@@ -412,9 +589,11 @@ namespace NwTagger.Core
                 if (after != null) _cameraKey = after;
 
                 // Did the markup actually land? Read it back rather than assume.
+                // An adopted viewpoint has to keep what it already had as well.
                 int count = MarkupBackend.Count(doc, view, ResolveStored(doc));
+                int expected = _baselineMarkup + _items.Count;
 
-                return count < 0 || count >= _items.Count;
+                return count < 0 || count >= expected;
             }
             catch
             {
@@ -423,26 +602,69 @@ namespace NwTagger.Core
         }
 
         /// <summary>
-        /// A new SavedViewpoint for the active camera, carrying the markup when
-        /// this release stores it that way.
+        /// A new SavedViewpoint for this write: our own camera plus all our
+        /// markup, or a fresh copy of the user's viewpoint with our markup added
+        /// to what it already held.
         /// </summary>
         private SavedViewpoint BuildViewpointObject()
         {
+            if (!_ownViewpoint)
+            {
+                if (_baseline == null)
+                {
+                    // Releases that keep markup on the view do not need an object
+                    // at all - the viewpoint is already in the document and Store
+                    // does the work.
+                    return MarkupBackend.MarkupTravelsInViewpoint ? null : PlaceholderForAdopted();
+                }
+
+                SavedViewpoint fresh = _baseline.CreateCopy() as SavedViewpoint;
+                if (fresh == null) return null;
+
+                if (_guid != Guid.Empty)
+                {
+                    try { fresh.Guid = _guid; }
+                    catch { /* ResolveTracking copes */ }
+                }
+
+                // Add to what the user already had; never clear it.
+                MarkupBackend.Append(fresh, _items);
+
+                return fresh;
+            }
+
             if (_camera == null) return null;
 
-            SavedViewpoint fresh = new SavedViewpoint(_camera.CreateCopy());
+            SavedViewpoint own = new SavedViewpoint(_camera.CreateCopy());
 
             if (_guid != Guid.Empty)
             {
-                try { fresh.Guid = _guid; }
+                try { own.Guid = _guid; }
                 catch { /* the document may re-issue one; ResolveTracking copes */ }
             }
 
-            fresh.DisplayName = _viewpointName;
+            own.DisplayName = _viewpointName;
 
-            MarkupBackend.Fill(fresh, _items);
+            MarkupBackend.Fill(own, _items);
 
-            return fresh;
+            return own;
+        }
+
+        /// <summary>
+        /// Something non-null for the write path to carry on with when the
+        /// markup does not live in the viewpoint object. It is never added to the
+        /// document: an adopted viewpoint is already in it.
+        /// </summary>
+        private SavedViewpoint PlaceholderForAdopted()
+        {
+            try
+            {
+                return _camera == null ? null : new SavedViewpoint(_camera.CreateCopy());
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>
