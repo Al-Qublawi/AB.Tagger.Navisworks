@@ -394,6 +394,10 @@ namespace NwTagger.Core
             Check(storedFirst < 0 || storedFirst >= firstExpected,
                   "the earlier viewpoint kept its markup",
                   "stored " + storedFirst + ", expected at least " + firstExpected);
+
+            // Kept, so the export case that follows has two viewpoints to group
+            // - which is the whole point of one row per viewpoint.
+            placed.Add(moved);
         }
 
         /// <summary>

@@ -451,6 +451,11 @@ you file one against it:
   and reloads the kernel, so changing Size re-renders **every** redline in the
   document, not just new tags. Colour and line thickness *are* per-tag
   (`SetLineColor` / `SetLineThickness`), so those vary freely.
+- **Leaving Size at 14 stores nothing.** 14 is Navisworks' own default, and
+  Navisworks records a default-valued option as the single character `0`,
+  meaning "not set". Reading that back is not a rejection - the tags are drawn
+  at 14 either way - so the add-in stays quiet about it. Any other size is
+  stored as itself (`2 26`) and is reported if Navisworks refuses it.
 - **Settings are not persisted between sessions.** They live in
   `TaggerSettings.Current` for the life of the Navisworks process. The redline
   font/size/colour *are* persisted, because those are real Navisworks options.

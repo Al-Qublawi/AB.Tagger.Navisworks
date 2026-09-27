@@ -239,9 +239,19 @@ namespace NwTagger.Core
 
                 string back = ReadValue(RedlinePath, "font_size");
                 string expected = EncodeInt(settings.TextSize);
+                string actual = back == null ? string.Empty : back.Trim();
 
-                if (!string.IsNullOrEmpty(back) &&
-                    !string.Equals(back.Trim(), expected, StringComparison.OrdinalIgnoreCase))
+                // A bare "0" is not a size - it is how Navisworks records "not
+                // set, use the built-in default", and it is exactly what it
+                // writes back when the size it was handed IS that default (14,
+                // out of the box). Treating that as a rejection put a dialog in
+                // front of anyone who left Size alone, every single time they
+                // pressed ENABLE, about nothing at all. A different concrete
+                // value really is a rejection, and is still reported.
+                bool usingBuiltInDefault = actual.Length == 0 || actual == "0";
+
+                if (!usingBuiltInDefault &&
+                    !string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
                 {
                     message = "Navisworks did not accept the text size (it reports \"" + back +
                               "\"). Tags will still be created, using the current redline font.";

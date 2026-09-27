@@ -41,6 +41,15 @@ Pressing the panel's **X** left the tagger still owning every left-click in the
 when its dock pane is closed, so the add-in now watches for it: closing the
 panel does exactly what **DISABLE** does.
 
+## No more "Navisworks did not accept the text size"
+
+Pressing **Enable** on the ribbon in 2026 and 2027 put up a dialog saying
+Navisworks had rejected the text size, "it reports 0". It had not. `0` is how
+Navisworks records an option left at its built-in default, and 14 - the size the
+panel starts at - is that default, so anyone who never touched Size got the
+dialog every single time they started tagging. The add-in now reads `0` for what
+it is. A size Navisworks genuinely refuses is still reported.
+
 ## Diagnostics and tests
 
 - **Tool Add-ins > "AB Tagger - Self test"** tags a few elements by itself and
