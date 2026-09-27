@@ -27,6 +27,12 @@ namespace NwTagger.Core
         public string ViewpointName { get; set; }
         public bool ReusedViewpoint { get; set; }
 
+        /// <summary>
+        /// Set when the markup had to be repaired or moved to a viewpoint of its
+        /// own on the way in. Shown on the panel's status line; never exported.
+        /// </summary>
+        public string Warning { get; set; }
+
         public string ElementId { get; set; }
         public string DisplayName { get; set; }
 
@@ -113,6 +119,24 @@ namespace NwTagger.Core
             {
                 if (_records.Count == 0) return;
                 _records.Clear();
+            }
+
+            Raise();
+        }
+
+        /// <summary>
+        /// Drops everything added after the first <paramref name="count"/> records.
+        /// The self test uses this to take its own tags back out without touching
+        /// the ones the user placed.
+        /// </summary>
+        internal void TrimTo(int count)
+        {
+            if (count < 0) count = 0;
+
+            lock (_gate)
+            {
+                if (_records.Count <= count) return;
+                _records.RemoveRange(count, _records.Count - count);
             }
 
             Raise();

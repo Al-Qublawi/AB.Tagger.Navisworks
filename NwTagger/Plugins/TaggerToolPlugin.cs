@@ -126,6 +126,12 @@ namespace NwTagger.Plugins
             {
                 Report("Could not create the tag.");
             }
+            else if (!string.IsNullOrEmpty(record.Warning))
+            {
+                // The markup did not survive the first write. Say so - a lost tag
+                // should never pass as a success.
+                Report(record.Warning);
+            }
             else
             {
                 Report(record.ReusedViewpoint

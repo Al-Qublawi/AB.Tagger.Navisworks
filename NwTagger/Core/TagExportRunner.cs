@@ -70,10 +70,11 @@ namespace NwTagger.Core
                         }
                     }
 
-                    TagExporter.Export(dialog.FileName, records, photos);
+                    // One row per viewpoint, so rows can be fewer than tags.
+                    int rows = TagExporter.Export(dialog.FileName, records, photos);
 
-                    status("Exported " + records.Count + " tag(s), "
-                         + photos.Count + " viewpoint photo(s), to " + dialog.FileName);
+                    status("Exported " + records.Count + " tag(s) in " + rows + " viewpoint row(s), "
+                         + photos.Count + " photo(s), to " + dialog.FileName);
 
                     return true;
                 }

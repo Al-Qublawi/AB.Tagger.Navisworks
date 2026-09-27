@@ -198,6 +198,7 @@ namespace NwTagger.Core
                 ViewpointGuid = viewpoint.ViewpointGuid,
                 ViewpointName = viewpoint.ViewpointName,
                 ReusedViewpoint = viewpoint.Reused,
+                Warning = viewpoint.Warning,
                 ElementId = pending.ElementId,
                 DisplayName = pending.Item == null ? string.Empty : SafeName(pending.Item),
                 Lines = new List<string>(pending.Lines),

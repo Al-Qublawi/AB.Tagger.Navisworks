@@ -28,6 +28,11 @@ namespace NwTagger.Plugins
 
         public override void DestroyControlPane(Control pane)
         {
+            // The panel is going away, so tagging goes with it - otherwise the
+            // tagger keeps owning every left-click with nothing on screen to say
+            // so, and no DISABLE button to press.
+            NwTagger.Core.ToolController.Disable();
+
             if (pane == null) return;
             pane.Dispose();
         }

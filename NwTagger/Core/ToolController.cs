@@ -11,6 +11,12 @@ namespace NwTagger.Core
     /// A ToolPlugin becomes active by handing it to Document.Tool via
     /// SetCustomToolPlugin; deactivating is just switching back to the
     /// standard Select tool.
+    ///
+    /// It also watches the dock panel while tagging is running. Navisworks gives
+    /// a dock pane an X and tells nobody when it is pressed - the pane simply
+    /// stops being visible - so closing the panel used to leave the tagger still
+    /// holding every left-click in the 3D view with nothing on screen saying so.
+    /// A closed panel now turns tagging off, exactly like the DISABLE button.
     /// </summary>
     public static class ToolController
     {
@@ -18,6 +24,16 @@ namespace NwTagger.Core
         public const string ToolPluginId = "NwTagger.Tool.ABHM";
 
         public const string PanePluginId = "NwTagger.Pane.ABHM";
+
+        /// <summary>Watches the panel while tagging is on. UI thread, like the panel itself.</summary>
+        private static System.Windows.Forms.Timer _paneWatchdog;
+
+        /// <summary>
+        /// True once the panel has been seen open while tagging was running. Until
+        /// then a hidden panel means nothing: tagging can be started from the
+        /// ribbon with the panel never opened, and that must keep working.
+        /// </summary>
+        private static bool _paneSeenVisible;
 
         /// <summary>True when our tool currently owns input in the 3D view.</summary>
         public static bool IsActive
@@ -76,8 +92,78 @@ namespace NwTagger.Core
             doc.Tool.SetCustomToolPlugin(tool);
             TaggerSettings.Current.IsEnabled = true;
 
+            StartPaneWatchdog();
+
             message = optionsMessage;
             return true;
+        }
+
+        /// <summary>
+        /// Starts watching the dock panel, so closing it stops tagging. Harmless
+        /// to call twice.
+        /// </summary>
+        private static void StartPaneWatchdog()
+        {
+            _paneSeenVisible = IsPaneVisible();
+
+            if (_paneWatchdog != null)
+            {
+                _paneWatchdog.Start();
+                return;
+            }
+
+            try
+            {
+                _paneWatchdog = new System.Windows.Forms.Timer();
+                _paneWatchdog.Interval = 400;
+                _paneWatchdog.Tick += delegate { PaneWatchdogTick(); };
+                _paneWatchdog.Start();
+            }
+            catch
+            {
+                // No timer means no watchdog; the DISABLE button still works.
+                _paneWatchdog = null;
+            }
+        }
+
+        private static void StopPaneWatchdog()
+        {
+            if (_paneWatchdog == null) return;
+
+            try { _paneWatchdog.Stop(); }
+            catch { /* going away anyway */ }
+        }
+
+        /// <summary>
+        /// Turns tagging off once the panel it belongs to is no longer on screen.
+        /// </summary>
+        private static void PaneWatchdogTick()
+        {
+            try
+            {
+                // Tagging already stopped some other way - nothing left to watch.
+                if (!IsActive)
+                {
+                    TaggerSettings.Current.IsEnabled = false;
+                    StopPaneWatchdog();
+                    return;
+                }
+
+                if (IsPaneVisible())
+                {
+                    _paneSeenVisible = true;
+                    return;
+                }
+
+                // Never open, so the panel is not what is driving this session.
+                if (!_paneSeenVisible) return;
+
+                Disable();
+            }
+            catch
+            {
+                // A watchdog must never throw into the Navisworks message loop.
+            }
         }
 
         /// <summary>Returns Navisworks to the standard Select tool.</summary>
@@ -104,6 +190,8 @@ namespace NwTagger.Core
             finally
             {
                 TaggerSettings.Current.IsEnabled = false;
+                _paneSeenVisible = false;
+                StopPaneWatchdog();
             }
         }
 

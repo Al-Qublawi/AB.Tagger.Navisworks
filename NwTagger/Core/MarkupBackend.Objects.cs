@@ -5,32 +5,44 @@ using Autodesk.Navisworks.Api.Interop;
 namespace NwTagger.Core
 {
     /// <summary>
-    /// Markup storage for Navisworks 2025 and 2026, which expose the redline
-    /// list on a viewpoint directly:
+    /// Markup storage for Navisworks 2024, 2025 and 2026, which expose the
+    /// redline list on a viewpoint directly:
     ///
     ///     SavedViewpoint.EditRedlines().Add(new LcOpRedlineText(...))
     ///
-    /// Markup is written straight into the in-memory viewpoint before it is
-    /// pushed to the document, so nothing extra is needed afterwards.
+    /// The markup rides inside the viewpoint object, so it reaches the document
+    /// with the copy that <see cref="ViewpointService"/> pushes down.
     ///
     /// 2027 removed these types; <c>MarkupBackend.Json.cs</c> replaces this file
-    /// in that build, selected by the NW_JSON_REDLINES constant in the csproj.
-    /// Both files expose the same two methods.
+    /// in that build, selected by -p:RedlineBackend=Json. Both files expose the
+    /// same four members, and <see cref="ViewpointService"/> uses nothing else.
     /// </summary>
     internal static class MarkupBackend
     {
         /// <summary>Which storage route this build was compiled for.</summary>
-        internal const string Description = "viewpoint redline list (2025 / 2026)";
+        internal const string Description = "viewpoint redline list (2024 - 2026)";
 
         /// <summary>
-        /// Replaces the viewpoint's markup with <paramref name="items"/>.
-        /// Called before the viewpoint is written to the document.
+        /// True: the markup is part of the viewpoint object, so updating a
+        /// viewpoint that is already in the document means replacing it.
         /// </summary>
-        internal static void Prepare(Document doc, View view, SavedViewpoint master, IList<MarkupItem> items)
-        {
-            if (master == null) return;
+        internal static readonly bool MarkupTravelsInViewpoint = true;
 
-            LcOpRedlineList list = master.EditRedlines();
+        /// <summary>
+        /// Puts <paramref name="items"/> into a viewpoint object that has not been
+        /// added to the document yet.
+        ///
+        /// The object is always a freshly built one - never one that has already
+        /// been copied into the document. A reused object hands back a redline
+        /// list whose native handle no longer belongs to it, and writes to it are
+        /// silently lost, which is how a viewpoint ended up in the document with
+        /// none of its tags in it.
+        /// </summary>
+        internal static void Fill(SavedViewpoint fresh, IList<MarkupItem> items)
+        {
+            if (fresh == null) return;
+
+            LcOpRedlineList list = fresh.EditRedlines();
             if (list == null) return;
 
             // The caller holds every item for this viewpoint, so rebuild the
@@ -47,11 +59,34 @@ namespace NwTagger.Core
         }
 
         /// <summary>
-        /// Nothing to do: the markup travelled inside the viewpoint that was just
-        /// added to the document.
+        /// Nothing to do: the markup travelled inside the viewpoint that
+        /// <see cref="ViewpointService"/> just wrote to the document.
         /// </summary>
-        internal static void Commit(Document doc, View view, SavedItem stored)
+        internal static void Store(Document doc, View view, SavedItem stored, IList<MarkupItem> items)
         {
+        }
+
+        /// <summary>
+        /// How many markup objects the document's copy of the viewpoint really
+        /// holds, or -1 when it cannot be read. This is read straight out of the
+        /// stored item, so it is the truth rather than what we hoped we wrote.
+        /// </summary>
+        internal static int Count(Document doc, View view, SavedItem stored)
+        {
+            SavedViewpoint viewpoint = stored as SavedViewpoint;
+            if (viewpoint == null) return -1;
+
+            try
+            {
+                LcOpRedlineList list = viewpoint.Redlines;
+                // Size() comes from LcOpRedlineListBase - LcOpRedlineList itself
+                // only publishes Add and Clear.
+                return list == null ? -1 : list.Size();
+            }
+            catch
+            {
+                return -1;
+            }
         }
 
         private static LcOpRedline Convert(MarkupItem item)

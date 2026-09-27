@@ -11,6 +11,12 @@ namespace NwTagger.Core
     /// Writes the session tag list to a real .xlsx with the saved-viewpoint photo
     /// embedded in each row, or to .csv when a photo-less list is enough.
     ///
+    /// One row per *viewpoint*, not per tag. Several tags placed without moving
+    /// the camera live in one viewpoint and share one photo, and repeating that
+    /// photo once per tag - as this did until 1.2.0 - made a sheet where the same
+    /// picture came back three or four times over. The tag names and source files
+    /// of those tags are listed together in the one row instead.
+    ///
     /// The workbook is assembled by hand - no external library - using inline
     /// strings for cell text and a spreadsheet drawing part for the images.
     /// </summary>
@@ -27,8 +33,12 @@ namespace NwTagger.Core
         /// <summary>Padding around the image inside its cell, in pixels.</summary>
         private const int PhotoPadding = 3;
 
-        /// <summary>Exports to .xlsx or .csv based on the file extension.</summary>
-        public static void Export(string path, IList<TagRecord> records, Dictionary<Guid, byte[]> photos)
+        /// <summary>
+        /// Exports to .xlsx or .csv based on the file extension, and returns how
+        /// many rows were written - one per viewpoint, so fewer than the number of
+        /// tags whenever tags share a viewpoint.
+        /// </summary>
+        public static int Export(string path, IList<TagRecord> records, Dictionary<Guid, byte[]> photos)
         {
             if (string.IsNullOrEmpty(path)) throw new ArgumentNullException("path");
             if (records == null) records = new List<TagRecord>();
@@ -37,31 +47,111 @@ namespace NwTagger.Core
             string extension = Path.GetExtension(path);
 
             if (string.Equals(extension, ".csv", StringComparison.OrdinalIgnoreCase))
-                ExportCsv(path, records);
-            else
-                ExportXlsx(path, records, photos);
+                return ExportCsv(path, records);
+
+            return ExportXlsx(path, records, photos);
+        }
+
+        /// <summary>
+        /// The tags of each viewpoint, in the order their viewpoints were first
+        /// tagged. A tag whose viewpoint could not be identified gets a group of
+        /// its own, so nothing is ever merged by accident.
+        /// </summary>
+        private static List<List<TagRecord>> GroupByViewpoint(IList<TagRecord> records)
+        {
+            List<List<TagRecord>> groups = new List<List<TagRecord>>();
+            Dictionary<Guid, List<TagRecord>> byGuid = new Dictionary<Guid, List<TagRecord>>();
+
+            foreach (TagRecord record in records)
+            {
+                if (record == null) continue;
+
+                if (record.ViewpointGuid == Guid.Empty)
+                {
+                    List<TagRecord> alone = new List<TagRecord>();
+                    alone.Add(record);
+                    groups.Add(alone);
+                    continue;
+                }
+
+                List<TagRecord> group;
+
+                if (!byGuid.TryGetValue(record.ViewpointGuid, out group))
+                {
+                    group = new List<TagRecord>();
+                    byGuid[record.ViewpointGuid] = group;
+                    groups.Add(group);
+                }
+
+                group.Add(record);
+            }
+
+            return groups;
+        }
+
+        /// <summary>
+        /// What goes in the Tag Name cell for one viewpoint: the viewpoint's own
+        /// name, which already reads as a range ("Tag 01-03"), or the tag names
+        /// listed out when there is no usable viewpoint name.
+        /// </summary>
+        private static string DescribeTags(List<TagRecord> group)
+        {
+            if (group.Count == 1) return group[0].TagName ?? string.Empty;
+
+            // Names widen as tags are added, so the last one covers them all.
+            string viewpointName = group[group.Count - 1].ViewpointName;
+            if (!string.IsNullOrEmpty(viewpointName)) return viewpointName;
+
+            List<string> names = new List<string>();
+
+            foreach (TagRecord record in group)
+            {
+                if (!string.IsNullOrEmpty(record.TagName) && !names.Contains(record.TagName))
+                    names.Add(record.TagName);
+            }
+
+            return string.Join(", ", names.ToArray());
+        }
+
+        /// <summary>Every source file the tags in this viewpoint came from, once each.</summary>
+        private static string DescribeFiles(List<TagRecord> group)
+        {
+            List<string> files = new List<string>();
+
+            foreach (TagRecord record in group)
+            {
+                if (string.IsNullOrEmpty(record.FileName)) continue;
+                if (!files.Contains(record.FileName)) files.Add(record.FileName);
+            }
+
+            return string.Join(", ", files.ToArray());
         }
 
         // ---------------------------------------------------------------- CSV
 
-        private static void ExportCsv(string path, IList<TagRecord> records)
+        private static int ExportCsv(string path, IList<TagRecord> records)
         {
             StringBuilder sb = new StringBuilder();
 
             sb.AppendLine(string.Join(",", Escape(new[] { HeaderTagName, HeaderFileName, HeaderComments })));
 
-            foreach (TagRecord record in records)
+            // One row per viewpoint here too, so the .csv and the .xlsx agree.
+            List<List<TagRecord>> groups = GroupByViewpoint(records);
+
+            foreach (List<TagRecord> group in groups)
             {
                 sb.AppendLine(string.Join(",", Escape(new[]
                 {
-                    record.TagName ?? string.Empty,
-                    record.FileName ?? string.Empty,
+                    DescribeTags(group),
+                    DescribeFiles(group),
                     string.Empty
                 })));
             }
 
             // UTF-8 with BOM so Excel picks up the encoding for non-ASCII names.
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true));
+
+            return groups.Count;
         }
 
         private static string[] Escape(string[] values)
@@ -83,10 +173,11 @@ namespace NwTagger.Core
 
         // --------------------------------------------------------------- XLSX
 
-        /// <summary>One row's worth of layout information.</summary>
+        /// <summary>One row - that is, one viewpoint - worth of layout information.</summary>
         private sealed class RowPlan
         {
-            public TagRecord Record;
+            public string TagNames;     // "Tag 01-03", or the one name for a single tag
+            public string FileNames;    // every source file in this viewpoint
             public byte[] Photo;
             public int PhotoWidth;
             public int PhotoHeight;
@@ -94,7 +185,7 @@ namespace NwTagger.Core
             public int RowIndex;        // 1-based worksheet row
         }
 
-        private static void ExportXlsx(string path, IList<TagRecord> records, Dictionary<Guid, byte[]> photos)
+        private static int ExportXlsx(string path, IList<TagRecord> records, Dictionary<Guid, byte[]> photos)
         {
             List<RowPlan> plans = BuildPlans(records, photos);
 
@@ -125,23 +216,27 @@ namespace NwTagger.Core
                     }
                 }
             }
+
+            return plans.Count;
         }
 
         private static List<RowPlan> BuildPlans(IList<TagRecord> records, Dictionary<Guid, byte[]> photos)
         {
             List<RowPlan> plans = new List<RowPlan>();
+            List<List<TagRecord>> groups = GroupByViewpoint(records);
             int imageIndex = 0;
 
-            for (int i = 0; i < records.Count; i++)
+            for (int i = 0; i < groups.Count; i++)
             {
-                TagRecord record = records[i];
+                List<TagRecord> group = groups[i];
 
                 byte[] photo;
-                if (!photos.TryGetValue(record.ViewpointGuid, out photo)) photo = null;
+                if (!photos.TryGetValue(group[0].ViewpointGuid, out photo)) photo = null;
 
                 RowPlan plan = new RowPlan
                 {
-                    Record = record,
+                    TagNames = DescribeTags(group),
+                    FileNames = DescribeFiles(group),
                     Photo = photo,
                     RowIndex = i + 2      // row 1 is the header
                 };
@@ -338,8 +433,8 @@ namespace NwTagger.Core
                 sb.Append(heightPoints.ToString("0.##", CultureInfo.InvariantCulture));
                 sb.Append("\" customHeight=\"1\">");
 
-                AppendCell(sb, "A" + row, plan.Record.TagName ?? string.Empty, 2);
-                AppendCell(sb, "B" + row, plan.Record.FileName ?? string.Empty, 2);
+                AppendCell(sb, "A" + row, plan.TagNames ?? string.Empty, 2);
+                AppendCell(sb, "B" + row, plan.FileNames ?? string.Empty, 2);
 
                 // The photo cell is left empty - the image floats over it from
                 // the drawing part. Note it when there is no photo.
@@ -403,7 +498,7 @@ namespace NwTagger.Core
                 sb.Append("<xdr:pic>");
                 sb.Append("<xdr:nvPicPr>");
                 sb.Append("<xdr:cNvPr id=\"").Append(shapeId.ToString(CultureInfo.InvariantCulture));
-                sb.Append("\" name=\"").Append(XmlEscape(plan.Record.TagName ?? "Photo")).Append("\"/>");
+                sb.Append("\" name=\"").Append(XmlEscape(plan.TagNames ?? "Photo")).Append("\"/>");
                 sb.Append("<xdr:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></xdr:cNvPicPr>");
                 sb.Append("</xdr:nvPicPr>");
 

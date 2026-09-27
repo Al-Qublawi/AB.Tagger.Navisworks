@@ -35,7 +35,14 @@ viewpoint was captured from where you already were. Orbit or zoom away and the
 markup behaves like any other Navisworks viewpoint.
 
 Press **Esc** between the two clicks to cancel. **DISABLE** returns Navisworks
-to the normal Select tool.
+to the normal Select tool, and so does **closing the panel** - tagging never
+keeps hold of the left mouse button once the panel it belongs to is gone.
+
+**Every tag is read back after it is written.** Markup that is drawn on screen
+is not proof that anything was stored, so the add-in asks the document what the
+viewpoint now holds. If the answer is short, it writes the tag again; if that
+fails too, the tag is given a viewpoint of its own and the panel says so. See
+**Two markup backends** for why that matters.
 
 ---
 
@@ -66,11 +73,11 @@ is still open, Windows lists it and asks you to close it.
 Silent options, for rolling out across a team:
 
 ```bash
-msiexec /i AB.Tagger-1.1.1.msi /qn                 :: only me
-msiexec /i AB.Tagger-1.1.1.msi /qn ALLUSERS=1      :: everyone (elevated prompt)
-msiexec /i AB.Tagger-1.1.1.msi /qn ALLRELEASES=1   :: also releases not installed here
-msiexec /i AB.Tagger-1.1.1.msi /qn NW2025=0        :: leave a release out
-msiexec /x AB.Tagger-1.1.1.msi /qn                 :: uninstall, without a window
+msiexec /i AB.Tagger-1.2.0.msi /qn                 :: only me
+msiexec /i AB.Tagger-1.2.0.msi /qn ALLUSERS=1      :: everyone (elevated prompt)
+msiexec /i AB.Tagger-1.2.0.msi /qn ALLRELEASES=1   :: also releases not installed here
+msiexec /i AB.Tagger-1.2.0.msi /qn NW2025=0        :: leave a release out
+msiexec /x AB.Tagger-1.2.0.msi /qn                 :: uninstall, without a window
 ```
 
 ### Release notifications
@@ -97,7 +104,60 @@ package would do on this machine without changing anything.
 ### Developing on it
 
 `install.ps1` is the faster loop while working on the code — it builds and
-copies straight into the plugin folder without going through the installer.
+copies straight into the per-user plugin folder without going through the
+installer:
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\install.ps1              # every release installed here
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Year 2027   # just one
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
+```
+
+It writes its own `PackageContents.xml` for exactly the releases it built, and
+warns when an **all-users** copy of the bundle is installed as well — that one
+declares the same plugin ids, so Navisworks loads one of them and ignores the
+other, and you cannot tell which binary you are testing. Uninstall it (Apps and
+Features → *AB Tagger for Navisworks*) before using a development install.
+
+### Tests
+
+Two sets, because the interesting half needs Navisworks and the other half does
+not:
+
+```bash
+dotnet run --project Tests\NwTagger.Tests -c Release    # 18 checks, no Navisworks
+```
+
+covers the Excel and CSV export (rows, photos, row heights, XML validity), the
+2027 redline JSON (round-trip, the captured sample byte for byte, escaping) and
+the text layout.
+
+**Tool Add-ins → "AB Tagger - Self test"** is the other half, and it needs a
+model open. It tags a few elements by itself and then checks what the *document*
+holds, leaving each viewpoint and coming back first so that markup still sitting
+on the view cannot be mistaken for markup that was stored. It covers:
+
+- several tags from one camera, all in one viewpoint, checked after every tag
+- another tag after clicking away to a different viewpoint and back
+- moving the camera starting a viewpoint of its own, without disturbing the first
+- the export writing one row per viewpoint, with each photo embedded once
+- closing the panel stopping tagging
+
+It then removes the viewpoints it created and puts the camera, the view's markup,
+the selection, the tag list, the tag numbering and the tool state back as they
+were, and writes a report to the Desktop.
+
+For an unattended run — testing a build without clicking through it:
+
+```bash
+set ABTAGGER_SELFTEST=1
+set ABTAGGER_SELFTEST_QUIET=1
+set ABTAGGER_SELFTEST_REPORT=C:\temp\tagger-selftest.txt
+"C:\Program Files\Autodesk\Navisworks Manage 2027\Roamer.exe" C:\models\something.nwd
+```
+
+The test runs itself as soon as the model is open and writes that file. Without
+`ABTAGGER_SELFTEST=1` none of this happens.
 
 ---
 
@@ -195,7 +255,39 @@ sharing everything upstream — picking, text layout, leader geometry, export:
 | Persist | (travels inside the viewpoint) | `ReplaceFromCurrentView(viewpoint)` |
 
 Exactly one compiles, selected by `-p:RedlineBackend=Json`. Both expose the same
-`Prepare` / `Commit` pair, so `ViewpointService` does not know which is in play.
+four members — `MarkupTravelsInViewpoint`, `Fill`, `Store`, `Count` — so
+`ViewpointService` does not know which is in play, and `Count` is what lets it
+read a write back instead of trusting it.
+
+### Two rules that keep the markup, learned the hard way
+
+Both of these lost **every tag in a viewpoint at once**, leaving the viewpoint
+in the list with nothing in it:
+
+1. **A viewpoint object is used once.** In 2024–2026 the markup rides inside the
+   `SavedViewpoint`, and the obvious thing to do is to keep that object, add the
+   next tag's redlines to it, and push it down again. Do that and the redline
+   list handed back by `EditRedlines()` no longer belongs to the object the
+   document has: `Clear` and `Add` still appear to work, the writes go nowhere,
+   and the next copy pushed to the document carries no markup at all.
+   `ViewpointService` therefore keeps the *camera* and the list of markup
+   between tags, and builds a brand new `SavedViewpoint` for every single write.
+
+2. **In 2027, the markup goes on after the viewpoint is current.** The markup
+   lives on the view there, and selecting a saved viewpoint re-applies *its*
+   markup to the view. Writing the JSON first and then replacing the stored
+   viewpoint — which is what 1.1.1 did — leaves a window where Navisworks
+   re-applies the viewpoint, wipes the view, and the capture that follows stores
+   an empty redline set over the real one. So the order is: make sure the
+   viewpoint is in the document, make it current, write the markup, then
+   `ReplaceFromCurrentView`. The stored viewpoint is never replaced by a
+   camera-only copy; renaming it uses `EditDisplayName` instead.
+
+And because neither of those is visible while you are looking at the viewpoint
+that still has the markup on screen, every write is read back with `Count`,
+re-done once if it is short, and sent to a viewpoint of its own if that fails —
+with the reason on the panel's status line. The self test checks all of this
+from a real document.
 
 Crucially, `LcOpRedline.ScreenToCameraSpace` is **still public in all three
 releases**, so pixel → camera-space conversion is identical everywhere and the
@@ -314,17 +406,22 @@ category/property pair to the Definitions list.
 
 ## The Excel export
 
-Four columns, one row per tag:
+Four columns, **one row per viewpoint**:
 
 | Column | Contents |
 |---|---|
-| **Tag Name** | `Tag 01`, `Tag 02`, … |
-| **File Name** | Source model the tagged element came from |
-| **Saved Viewpoint** | Photo of the viewpoint, with the tag markup drawn on it |
+| **Tag Name** | The viewpoint, which already reads as a range: `Tag 01`, `Tag 04-06` |
+| **File Name** | Every source model the tags in that viewpoint came from, once each |
+| **Saved Viewpoint** | Photo of the viewpoint, with all of its tag markup drawn on it |
 | **Comments** | Left blank for you to fill in |
 
 Rows are sized to the photo and the comments column wraps, so it is ready to
 type into as soon as it opens.
+
+Up to 1.1.1 this was one row per *tag*, which meant a viewpoint holding four
+tags repeated the same photo on four rows. Tags that share a viewpoint now share
+its row: `Tag 04-06` is one line, one picture, one comment box. The `.csv`
+option groups identically, so the two always list the same rows.
 
 **How the photo is made.** Exporting steps the camera through each tagged
 viewpoint and captures it with `ImageGenerationStyle.Scene` — geometry only,
@@ -335,9 +432,8 @@ overlay settings, and it renders correctly at export resolution rather than the
 resolution the tag was placed at. Your current view is restored when it
 finishes.
 
-Several tags placed without moving the camera share one viewpoint, so they
-share one photo — with **all** of their markup drawn on it. Each still gets its
-own row.
+Several tags placed without moving the camera share one viewpoint, so they share
+one photo — with **all** of their markup drawn on it — and now one row.
 
 If a viewpoint cannot be photographed the row still exports, with `(no photo)`
 in the photo cell. The `.csv` option writes Tag Name, File Name and Comments
@@ -363,7 +459,16 @@ you file one against it:
   first opens on a document with no tags yet. If you open the panel after
   tagging, the toggle reports that it cannot hide rather than guessing.
 - **While the tool is enabled it owns left-click.** Middle and right button are
-  passed through so orbit/pan/zoom still work.
+  passed through so orbit/pan/zoom still work. Closing the panel turns tagging
+  off, so the left button always comes back with it.
+- **Tags are numbered from the viewpoints in the document**, so a self test run,
+  or viewpoints you delete by hand, do not make the next tag collide with an
+  existing name.
+- **In 2027, a tag replaces whatever markup is on the live view.** Markup there
+  is what the add-in writes and captures, and it cannot tell your redlines from
+  its own - so redlines drawn by hand into the live view, and not saved into a
+  viewpoint of their own, are gone once you tag from that camera. 2024 - 2026
+  write into the tag's own viewpoint and never touch the view.
 
 ---
 
@@ -382,18 +487,26 @@ NwTagger/                  the add-in itself
     MarkupModel.cs         Version-neutral markup (text / arrow, camera space)
     MarkupBackend.*.cs     Two storage backends; one compiles per release
     RedlineJson.cs         The 2027 wire format, verified byte-for-byte
-    ViewpointService.cs    Creates/reuses the saved viewpoint, Tag NN numbering
+    ViewpointService.cs    Creates/reuses the saved viewpoint, Tag NN numbering,
+                           reads every write back and repairs it
     TagService.cs          Orchestrates one tag end to end
     TagRecord.cs           Session tag list + markup geometry for the export
     ViewpointPhotoService.cs  Captures each viewpoint and redraws the markup
-    TagExporter.cs         Dependency-free .xlsx (with images) and .csv writer
-    ToolController.cs      Enable/disable, pane show/hide
+    TagExporter.cs         Dependency-free .xlsx (with images) and .csv writer,
+                           one row per viewpoint
+    TaggerSelfTest.cs      The in-Navisworks diagnostic: tags, reads storage back,
+                           puts everything back
+    ToolController.cs      Enable/disable, pane show/hide, and the watchdog that
+                           stops tagging when the panel closes
   Plugins/
     TaggerToolPlugin.cs    ToolPlugin: two-click flow + OverlayRender preview
     TaggerPanePlugin.cs    DockPanePlugin host
     TaggerCommandPlugin.cs Tool Add-ins button
     TaggerRibbonPlugin.cs  The panels on the AB Adv Tools tab + shared suite commands
-    TaggerStartup.cs       Joins the AB Adv Tools suite at startup (tab merge, update check)
+    TaggerSelfTestPlugin.cs  Tool Add-ins > "AB Tagger - Self test"
+    TaggerStartup.cs       Joins the AB Adv Tools suite at startup (tab merge, update
+                           check), and starts the self test when asked to by
+                           ABTAGGER_SELFTEST=1
   UI/
     TaggerPaneControl.cs   The WinForms panel
 
@@ -406,6 +519,8 @@ installer/
 
 shared/ABAdvTools/         the AB Adv Tools kit - shared tab, About, release checks,
                            .msi builder (vendored; edit the canonical kit and sync)
+
+Tests/NwTagger.Tests/      The checks that do not need Navisworks (export, JSON, layout)
 
 Probe2027/                 2027 redline-format probe (diagnostic, not shipped)
   RedlineDumpPlugin.cs     Dumps GetRedlines() per viewpoint + round-trip test

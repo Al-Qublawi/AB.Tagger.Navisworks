@@ -89,15 +89,33 @@ namespace NwTagger.Core
 
         /// <summary>Identifies the viewpoint so the exporter can photograph it.</summary>
         public Guid ViewpointGuid { get; set; }
+
+        /// <summary>
+        /// Set when the markup did not survive the first write and something had
+        /// to be done about it; null when the tag was stored normally. The tool
+        /// puts this on the panel's status line rather than letting a lost tag
+        /// pass unnoticed.
+        /// </summary>
+        public string Warning { get; set; }
     }
 
     /// <summary>
     /// Owns the saved viewpoint the tags are being written into.
     ///
-    /// The master SavedViewpoint is held in memory and is the single source of
-    /// truth for the redline list. Items already inside the document are
-    /// read-only, so rather than round-tripping through the document we
-    /// accumulate here and push the whole object down each time.
+    /// What it keeps between tags is the *camera* and the list of markup, never a
+    /// viewpoint object. Every write builds a brand new SavedViewpoint from that
+    /// camera and pushes it down; nothing the document has already copied is
+    /// written to a second time.
+    ///
+    /// That is deliberate, and it is the fix for tags disappearing. A viewpoint
+    /// object that has been copied into the document once hands back a redline
+    /// list that no longer belongs to it: Clear and Add still appear to work, the
+    /// writes go nowhere, and the next copy pushed to the document carries no
+    /// markup at all - so every tag in that viewpoint vanishes at once and the
+    /// viewpoint sits there empty. A fresh object cannot get into that state.
+    ///
+    /// Each write is then checked by reading the markup back out of the document,
+    /// and done again if it did not land.
     /// </summary>
     public sealed class ViewpointService
     {
@@ -110,16 +128,20 @@ namespace NwTagger.Core
         private static readonly Regex TagNamePattern =
             new Regex(@"^Tag\s+(\d+)(?:\s*-\s*(\d+))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-        private SavedViewpoint _master;
+        /// <summary>The camera the active viewpoint was captured from.</summary>
+        private Viewpoint _camera;
+
+        private CameraKey _cameraKey;
         private Guid _guid;
         private bool _inDocument;
-        private CameraKey _camera;
         private string _viewpointName;
+
+        /// <summary>The name before the last widening, used to re-find the item.</summary>
+        private string _previousViewpointName;
 
         /// <summary>
         /// Every markup item in the active viewpoint. Held here rather than read
-        /// back from the document, so the backends can rebuild the whole set
-        /// without either of them needing to enumerate existing markup.
+        /// back from the document, so each write can rebuild the whole set.
         /// </summary>
         private readonly List<MarkupItem> _items = new List<MarkupItem>();
 
@@ -129,14 +151,18 @@ namespace NwTagger.Core
         private int _firstTagInViewpoint;
         private int _lastTagInViewpoint;
 
+        /// <summary>Which storage route this build uses - named in the diagnostics report.</summary>
+        public static string BackendDescription { get { return MarkupBackend.Description; } }
+
         /// <summary>Forgets the active viewpoint, so the next tag starts a new one.</summary>
         public void Reset()
         {
-            _master = null;
+            _camera = null;
+            _cameraKey = null;
             _guid = Guid.Empty;
             _inDocument = false;
-            _camera = null;
             _viewpointName = null;
+            _previousViewpointName = null;
             _firstTagInViewpoint = 0;
             _lastTagInViewpoint = 0;
             _items.Clear();
@@ -148,6 +174,20 @@ namespace NwTagger.Core
             Reset();
             _nextTagNumber = 1;
             _numberingInitialised = false;
+        }
+
+        /// <summary>
+        /// The number the next tag will be given. The diagnostics put this back
+        /// where it found it, so a self test does not consume tag numbers.
+        /// </summary>
+        internal int NextTagNumber
+        {
+            get { return _nextTagNumber; }
+            set
+            {
+                _nextTagNumber = value < 1 ? 1 : value;
+                _numberingInitialised = true;
+            }
         }
 
         /// <summary>
@@ -168,43 +208,69 @@ namespace NwTagger.Core
             string tagName = FormatTagName(tagNumber);
 
             CameraKey now = CameraKey.FromCurrent(doc);
-            bool sameCamera = _inDocument && _master != null && _camera != null && _camera.Matches(now);
+            bool sameCamera = _inDocument && _camera != null && _cameraKey != null && _cameraKey.Matches(now);
 
-            if (!sameCamera)
+            // This tag's own markup is kept aside: if the shared viewpoint turns
+            // out not to take it, the tag still gets a viewpoint of its own.
+            List<MarkupItem> mine = new List<MarkupItem>();
+            if (markup != null) mine.AddRange(markup);
+
+            if (!sameCamera) StartNewViewpoint(doc, now, tagNumber);
+            else WidenName(tagNumber);
+
+            _items.AddRange(mine);
+
+            string warning = null;
+
+            if (!TryWrite(doc, view, selection))
             {
-                StartNewViewpoint(doc, now, tagNumber);
+                // Attempt two, with another brand new viewpoint object. This is
+                // what recovers when a write silently stored nothing.
+                if (TryWrite(doc, view, selection))
+                {
+                    warning = "Navisworks dropped the markup on the first attempt - " + tagName
+                            + " was written again into \"" + _viewpointName + "\".";
+                }
+                else
+                {
+                    // Give this tag a viewpoint of its own rather than lose it.
+                    // Whatever is already stored in the old one stays there.
+                    Reset();
+                    StartNewViewpoint(doc, now, tagNumber);
+                    _items.AddRange(mine);
+                    sameCamera = false;
+
+                    warning = TryWrite(doc, view, selection)
+                        ? "The earlier viewpoint would not take more markup, so " + tagName
+                            + " was saved in a viewpoint of its own."
+                        : "Navisworks would not store the markup for " + tagName + ".";
+                }
             }
-            else
-            {
-                // Widen the viewpoint name to cover every tag it now holds.
-                _lastTagInViewpoint = tagNumber;
-                _viewpointName = _firstTagInViewpoint == _lastTagInViewpoint
-                    ? FormatTagName(_firstTagInViewpoint)
-                    : FormatTagName(_firstTagInViewpoint) + "-" + tagNumber.ToString("00", CultureInfo.InvariantCulture);
-            }
-
-            if (markup != null) _items.AddRange(markup);
-
-            // Hand the complete set to whichever storage route this build uses:
-            // the viewpoint's redline list (2025/2026) or the view's JSON (2027).
-            MarkupBackend.Prepare(doc, view, _master, _items);
-
-            _master.DisplayName = _viewpointName;
-
-            PushToDocument(doc, view, selection);
 
             return new ViewpointResult
             {
                 TagName = tagName,
                 ViewpointName = _viewpointName,
                 Reused = sameCamera,
-                ViewpointGuid = _guid
+                ViewpointGuid = _guid,
+                Warning = warning
             };
         }
 
         private static string FormatTagName(int number)
         {
             return "Tag " + number.ToString("00", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>Widens the viewpoint name to cover every tag it now holds.</summary>
+        private void WidenName(int tagNumber)
+        {
+            _previousViewpointName = _viewpointName;
+            _lastTagInViewpoint = tagNumber;
+
+            _viewpointName = _firstTagInViewpoint == _lastTagInViewpoint
+                ? FormatTagName(_firstTagInViewpoint)
+                : FormatTagName(_firstTagInViewpoint) + "-" + tagNumber.ToString("00", CultureInfo.InvariantCulture);
         }
 
         /// <summary>
@@ -261,11 +327,9 @@ namespace NwTagger.Core
 
         private void StartNewViewpoint(Document doc, CameraKey camera, int tagNumber)
         {
-            Viewpoint copy = doc.CurrentViewpoint.CreateCopy();
-
-            _master = new SavedViewpoint(copy);
+            _camera = doc.CurrentViewpoint.CreateCopy();
+            _cameraKey = camera;
             _guid = Guid.NewGuid();
-            _camera = camera;
             _inDocument = false;
 
             // A new viewpoint starts with no markup of its own.
@@ -274,70 +338,176 @@ namespace NwTagger.Core
             _firstTagInViewpoint = tagNumber;
             _lastTagInViewpoint = tagNumber;
             _viewpointName = FormatTagName(tagNumber);
-
-            try
-            {
-                _master.Guid = _guid;
-            }
-            catch
-            {
-                _guid = Guid.Empty;
-            }
-
-            _master.DisplayName = _viewpointName;
+            _previousViewpointName = null;
         }
 
         /// <summary>
-        /// Writes the master viewpoint into the document, adding it the first time
-        /// and replacing it in place afterwards so repeat tags do not pile up
-        /// duplicate viewpoints.
+        /// One complete attempt at writing the active viewpoint - markup and all -
+        /// into the document. Returns false when the markup is not in the document
+        /// afterwards, whatever the reason; the caller decides what to do then.
         /// </summary>
-        private void PushToDocument(Document doc, View view, ModelItemCollection selection)
+        private bool TryWrite(Document doc, View view, ModelItemCollection selection)
         {
-            using (Transaction transaction = doc.BeginTransaction(_inDocument ? "Update tag viewpoint" : "Add tag viewpoint"))
+            try
             {
-                // Storing the selection alongside the camera makes the viewpoint
-                // restore the tagged element as well as the view.
-                if (selection != null)
+                // Always a brand new object, never one the document has seen.
+                SavedViewpoint fresh = BuildViewpointObject();
+                if (fresh == null) return false;
+
+                using (Transaction transaction = doc.BeginTransaction(_inDocument ? "Update tag viewpoint" : "Add tag viewpoint"))
                 {
-                    try { doc.CurrentSelection.CopyFrom(selection); }
-                    catch { /* selection is a convenience, not a requirement */ }
+                    // Storing the selection alongside the camera makes the
+                    // viewpoint restore the tagged element as well as the view.
+                    if (selection != null)
+                    {
+                        try { doc.CurrentSelection.CopyFrom(selection); }
+                        catch { /* selection is a convenience, not a requirement */ }
+                    }
+
+                    if (!_inDocument)
+                    {
+                        doc.SavedViewpoints.AddCopy(fresh);
+                        _inDocument = true;
+                    }
+                    else if (MarkupBackend.MarkupTravelsInViewpoint)
+                    {
+                        // The markup is inside the object, so the document's copy
+                        // has to be replaced for it to take the new tag.
+                        ReplaceOrAdd(doc, fresh);
+                    }
+
+                    transaction.Commit();
                 }
 
-                if (!_inDocument)
-                {
-                    doc.SavedViewpoints.AddCopy(_master);
-                    _inDocument = true;
-                    ResolveGuidAfterAdd(doc);
-                }
-                else
-                {
-                    ReplaceExisting(doc);
-                }
+                ResolveTracking(doc);
 
-                // 2027 needs the stored viewpoint to capture the markup that is
-                // on the live view; the object backend does nothing here.
                 SavedItem stored = ResolveStored(doc);
-                if (stored != null) MarkupBackend.Commit(doc, view, stored);
+                if (stored == null) return false;
 
-                transaction.Commit();
+                // Releases that keep the markup on the view write it now, with the
+                // viewpoint already in the document and made current.
+                MarkupBackend.Store(doc, view, stored, _items);
+
+                // Re-find it: capturing from the current view can hand back a
+                // different object, and the name has to be right afterwards.
+                ResolveTracking(doc);
+                stored = ResolveStored(doc);
+                if (stored == null) return false;
+
+                Rename(doc, stored);
+
+                // Redlines are only drawn while their viewpoint is the current
+                // one. Without this the markup vanishes the instant it is written
+                // and only reappears when the viewpoint is clicked in the Saved
+                // Viewpoints window. The camera does not move, because the
+                // viewpoint was captured from where the user already was. The JSON
+                // backend has already done this - it has to write the markup with
+                // the viewpoint current.
+                if (MarkupBackend.MarkupTravelsInViewpoint) MakeCurrent(doc, stored);
+
+                // Selecting a viewpoint can nudge the camera by a rounding error.
+                // Re-reading it here keeps the next tag in this same viewpoint
+                // instead of starting another one that looks identical.
+                CameraKey after = CameraKey.FromCurrent(doc);
+                if (after != null) _cameraKey = after;
+
+                // Did the markup actually land? Read it back rather than assume.
+                int count = MarkupBackend.Count(doc, view, ResolveStored(doc));
+
+                return count < 0 || count >= _items.Count;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// A new SavedViewpoint for the active camera, carrying the markup when
+        /// this release stores it that way.
+        /// </summary>
+        private SavedViewpoint BuildViewpointObject()
+        {
+            if (_camera == null) return null;
+
+            SavedViewpoint fresh = new SavedViewpoint(_camera.CreateCopy());
+
+            if (_guid != Guid.Empty)
+            {
+                try { fresh.Guid = _guid; }
+                catch { /* the document may re-issue one; ResolveTracking copes */ }
             }
 
-            // Redlines are only drawn while their viewpoint is the current one.
-            // Without this the markup vanishes the instant it is written and only
-            // reappears when the viewpoint is clicked in the Saved Viewpoints
-            // window. Making it current keeps the tag on screen, and because the
-            // viewpoint was captured from the live camera the view does not move.
-            // Navigating away then behaves like any other Navisworks viewpoint.
-            MakeCurrent(doc);
+            fresh.DisplayName = _viewpointName;
+
+            MarkupBackend.Fill(fresh, _items);
+
+            return fresh;
+        }
+
+        /// <summary>
+        /// Replaces the document's copy of the viewpoint in place, so repeated
+        /// tags do not pile up duplicate viewpoints. Adds it instead when it has
+        /// gone - deleted by the user, or never tracked.
+        /// </summary>
+        private void ReplaceOrAdd(Document doc, SavedViewpoint fresh)
+        {
+            SavedItem existing = ResolveStored(doc);
+
+            if (existing == null)
+            {
+                doc.SavedViewpoints.AddCopy(fresh);
+                return;
+            }
+
+            GroupItem parent = existing.Parent;
+
+            if (parent != null)
+            {
+                int index = parent.Children.IndexOf(existing);
+                if (index >= 0)
+                {
+                    doc.SavedViewpoints.ReplaceWithCopy(parent, index, fresh);
+                    return;
+                }
+            }
+
+            int rootIndex = doc.SavedViewpoints.Value.IndexOf(existing);
+            if (rootIndex >= 0)
+            {
+                doc.SavedViewpoints.ReplaceWithCopy(rootIndex, fresh);
+                return;
+            }
+
+            doc.SavedViewpoints.AddCopy(fresh);
+        }
+
+        /// <summary>Names the stored viewpoint, if it is not already right.</summary>
+        private void Rename(Document doc, SavedItem stored)
+        {
+            if (stored == null || string.IsNullOrEmpty(_viewpointName)) return;
+
+            try
+            {
+                if (string.Equals(stored.DisplayName, _viewpointName, StringComparison.Ordinal)) return;
+
+                using (Transaction transaction = doc.BeginTransaction("Name tag viewpoint"))
+                {
+                    doc.SavedViewpoints.EditDisplayName(stored, _viewpointName);
+                    transaction.Commit();
+                }
+            }
+            catch
+            {
+                // A wrong name is cosmetic; the markup is what matters.
+            }
         }
 
         /// <summary>
         /// Selects the tag viewpoint in the document so its markup stays visible.
         /// </summary>
-        private void MakeCurrent(Document doc)
+        private void MakeCurrent(Document doc, SavedItem item)
         {
-            SavedItem item = ResolveStored(doc);
             if (item == null) return;
 
             try
@@ -366,30 +536,31 @@ namespace NwTagger.Core
         }
 
         /// <summary>
-        /// AddCopy stores a copy, which may not preserve our guid. Re-find the
-        /// document item so later replacements target the right entry.
+        /// Makes sure we can still find the viewpoint being written to. Copying an
+        /// item into the document, or re-capturing it from the current view, can
+        /// give it a different guid - so when the guid stops resolving, the item is
+        /// re-found by name and adopted.
         /// </summary>
-        private void ResolveGuidAfterAdd(Document doc)
+        private void ResolveTracking(Document doc)
         {
             try
             {
-                if (_guid != Guid.Empty && doc.SavedViewpoints.ResolveGuid(_guid) != null)
+                if (!_inDocument) return;
+                if (ResolveStored(doc) != null) return;
+
+                SavedItem match = FindByName(doc, _viewpointName);
+                if (match == null) match = FindByName(doc, _previousViewpointName);
+
+                if (match != null)
+                {
+                    _guid = match.Guid;
                     return;
-
-                SavedItemCollection roots = doc.SavedViewpoints.Value;
-                int index = roots.IndexOfDisplayName(_viewpointName);
-
-                if (index >= 0)
-                {
-                    SavedItem[] items = new SavedItem[roots.Count];
-                    roots.CopyTo(items, 0);
-                    _guid = items[index].Guid;
                 }
-                else
-                {
-                    // Cannot track it - fall back to always creating a new viewpoint.
-                    _inDocument = false;
-                }
+
+                // It cannot be tracked any more, so the next write starts a new
+                // viewpoint rather than silently writing over someone else's.
+                _inDocument = false;
+                _guid = Guid.Empty;
             }
             catch
             {
@@ -397,61 +568,27 @@ namespace NwTagger.Core
             }
         }
 
-        private void ReplaceExisting(Document doc)
+        /// <summary>The last viewpoint with this display name, anywhere in the tree.</summary>
+        private static SavedItem FindByName(Document doc, string name)
         {
-            SavedItem existing = null;
+            if (string.IsNullOrEmpty(name)) return null;
+
+            SavedItem found = null;
 
             try
             {
-                if (_guid != Guid.Empty)
-                    existing = doc.SavedViewpoints.ResolveGuid(_guid);
-            }
-            catch
-            {
-                existing = null;
-            }
-
-            if (existing == null)
-            {
-                // Someone deleted or moved it - start over rather than throwing.
-                doc.SavedViewpoints.AddCopy(_master);
-                ResolveGuidAfterAdd(doc);
-                return;
-            }
-
-            // If AddCopy gave the document item a different guid than the master
-            // carries, align them before replacing - otherwise the replacement
-            // writes the master's old guid back and we lose track of the item.
-            try
-            {
-                _master.Guid = _guid;
-            }
-            catch
-            {
-                // Non-fatal: the lookups below still work by index.
-            }
-
-            GroupItem parent = existing.Parent;
-
-            if (parent != null)
-            {
-                int index = parent.Children.IndexOf(existing);
-                if (index >= 0)
+                foreach (SavedItem item in EnumerateAll(doc.SavedViewpoints.RootItem))
                 {
-                    doc.SavedViewpoints.ReplaceWithCopy(parent, index, _master);
-                    return;
+                    if (item == null || item.IsGroup) continue;
+                    if (string.Equals(item.DisplayName, name, StringComparison.Ordinal)) found = item;
                 }
             }
-
-            int rootIndex = doc.SavedViewpoints.Value.IndexOf(existing);
-            if (rootIndex >= 0)
+            catch
             {
-                doc.SavedViewpoints.ReplaceWithCopy(rootIndex, _master);
-                return;
+                return null;
             }
 
-            doc.SavedViewpoints.AddCopy(_master);
-            ResolveGuidAfterAdd(doc);
+            return found;
         }
     }
 }

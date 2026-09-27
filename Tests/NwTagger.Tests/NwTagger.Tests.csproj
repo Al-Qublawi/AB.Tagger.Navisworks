@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Checks the parts of the tagger that do not need Navisworks running: the Excel
+    and CSV export, the 2027 redline JSON, and the text layout. From the
+    repository root:
+
+        dotnet run (project Tests/NwTagger.Tests, configuration Release)
+
+    Anything that needs a live document is in the add-in's own self test
+    (Tool Add-ins, "AB Tagger self test"), because only Navisworks can say
+    whether a viewpoint kept its markup.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>NwTagger.Tests</AssemblyName>
+    <RootNamespace>NwTagger.Tests</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AssemblyTitle>AB Tagger tests</AssemblyTitle>
+    <Product>NwTagger</Product>
+    <Company>Abdullah Lotfy</Company>
+  </PropertyGroup>
+
+  <!--
+    The add-in is referenced for its code, not to run inside Navisworks. Nothing
+    tested here touches a Navisworks type, so no Autodesk assembly is ever loaded
+    - which is why this runs on a machine with Navisworks closed.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\NwTagger\NwTagger.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+</Project>

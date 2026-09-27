@@ -1,6 +1,7 @@
 using Autodesk.Navisworks.Api.Plugins;
 using ABAdvTools;
 using ABAdvTools.Navisworks;
+using NwTagger.Core;
 
 namespace NwTagger.Plugins
 {
@@ -20,6 +21,11 @@ namespace NwTagger.Plugins
         public override void OnLoaded()
         {
             NavisworksAdvTools.Start(Product);
+
+            // Only does something when ABTAGGER_SELFTEST=1 is set - see
+            // TaggerSelfTest. It is how a build gets tested in a real Navisworks
+            // without a person clicking through it.
+            TaggerSelfTest.StartUnattendedIfRequested();
         }
 
         public override void OnUnloading()
