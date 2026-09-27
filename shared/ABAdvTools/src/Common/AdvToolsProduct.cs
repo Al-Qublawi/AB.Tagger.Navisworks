@@ -43,6 +43,7 @@ namespace ABAdvTools
                                string gitHubRepository, Assembly versionSource)
             : this(id, name, tagline, host, AdvToolsBrand.GitHubOwner, gitHubRepository, VersionOf(versionSource))
         {
+            BuildsSharedPanel = true;
         }
 
         /// <summary>Rebuilds a product another add-in registered (see AdvToolsRegistry).</summary>
@@ -84,6 +85,15 @@ namespace ABAdvTools
         /// add-in that already had its own "check for updates" option before joining the suite.
         /// </summary>
         public Func<bool> AutomaticChecksAllowed { get; set; }
+
+        /// <summary>
+        /// Whether this add-in may build the shared "AB Adv Tools" panel (About, Check for Updates,
+        /// LinkedIn). True by default. An add-in sold through the Autodesk Marketplace sets it to false:
+        /// the store forbids an app carrying its own update mechanism, and the panel's update button -
+        /// which only checks the other AB tools - would be read as one. Any other AB add-in installed
+        /// beside it still builds the panel as usual.
+        /// </summary>
+        public bool BuildsSharedPanel { get; set; }
 
         /// <summary>
         /// Extra lines for this tool in the About dialog - what an add-in's own About used to say

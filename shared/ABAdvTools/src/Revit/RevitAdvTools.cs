@@ -107,6 +107,12 @@ namespace ABAdvTools.Revit
         {
             try
             {
+                if (_product != null && !_product.BuildsSharedPanel)
+                {
+                    AdvToolsLog.Info("Shared panel not built by " + _product.Id + " (store build); another AB tool may build it.");
+                    return;
+                }
+
                 string owner;
                 string me = typeof(RevitAdvTools).Assembly.GetName().Name;
                 if (!AdvToolsRegistry.TryClaim(SharedPanelJob, me, out owner))
