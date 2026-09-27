@@ -1,6 +1,7 @@
 # AB Tagger 1.2.0
 
-Three bugs, all reported from live use, and the tests that would have caught them.
+Three bugs reported from live use, a fourth found while testing the fixes, and the tests
+that would have caught all of them.
 
 ## Tags no longer disappear from a viewpoint
 
